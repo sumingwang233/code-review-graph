@@ -2,6 +2,8 @@ The 60-second Agent memory explainer uses native 3840 × 2160 product illustrati
 
 The composition is 1440 frames at 24 fps. Every transform is calculated from `useCurrentFrame()`, using Framer Motion's `cubicBezier()` easing and `motion.div` transform styles, so export does not depend on wall-clock animation timing.
 
+Each scene has a distinct layout and motion: an orbital intro, CLI typing with a horizontal capture handoff, radial memory assembly, a targeted correction and graph recentering, sequential retrieval with separate memory/code/work visuals, a wide dashboard pan with inspector reveal, and a closing node convergence into the brand symbol. Branding and captions remain steady throughout.
+
 To rebuild on this Mac:
 
 ```sh

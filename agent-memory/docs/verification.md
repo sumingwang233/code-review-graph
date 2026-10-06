@@ -14,11 +14,10 @@ A real keyword-only index initially found no nodes because response-style memory
 
 The OpenAI key stays in private backend process memory. The frontend uses a separate local access token. No secrets are committed.
 
-Lovable commit 27d6b7f382a02bf4d3ee12d146503dc753bbfbf4 reports **84 frontend tests**, successful types/build/lint and desktop/mobile verification. The interface has one Agent memory canvas. This directory is a partial source mirror.
+Lovable commit f41d955815ab52b24ecf9c3bf5d9892959924404 reports **89 frontend tests**, successful types/build/lint. The interface has one Agent memory canvas. Saved mode and tab credentials restore its live connection after reload; this was independently verified in the user's tab with four active memories, one relationship and both retrieval layers ready. A new tab still needs its own credential pairing. This directory is a partial source mirror.
 
 The original working checkout and existing uncommitted changes remain untouched. Native automatic hooks still require the client's built-in trust step. A standalone invocation is verified; it does not claim desktop-native activation.
 
-Video: 3840x2160,24fps,1440frames,exactly60 seconds,H264/AAC. Revised animation includes typing, cursor actions, emerging nodes, flowing edges, forgetting, retrieval and inspection. British female narration is AI generated. Music is original synthesized audio.
+Video: 3840x2160,24fps,1440frames,exactly60 seconds,H264/AAC. The seven scenes use different layouts and motion: orbital intro, CLI capture handoff, radial graph assembly, targeted correction, sequential retrieval, dashboard pan/inspection and closing brand convergence. British female narration is AI generated. Music is original synthesized audio.
 
 No token savings benchmark, public app publication or multi-user Cloud deployment was performed. PR creation uses an isolated branch with multiple focused commits and remains unmerged.
-

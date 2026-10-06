@@ -52,7 +52,6 @@ export function RetrievalStatus({
       <span className={`rs-stage ${agent === "ready" ? "rs-ok" : "rs-partial"}`}>
         3 Context prepared{agent === "ready" ? "" : " (partial)"}
       </span>
-      <span className="retrieval-muted">Delivery to a tool is not confirmed here.</span>
     </div>
   );
 }

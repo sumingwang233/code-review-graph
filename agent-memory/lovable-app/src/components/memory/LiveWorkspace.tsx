@@ -77,6 +77,8 @@ export function LiveWorkspace({
 }) {
   const [url, setUrl] = useState("");
   const [token, setToken] = useState("");
+  const urlState = url;
+  const tokenState = token;
   const [connection, setConnection] = useState<Connection>({ status: "disconnected" });
   const [sessions, setSessions] = useState<LiveSession[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -100,10 +102,19 @@ export function LiveWorkspace({
   const sessionsRef = useRef<LiveSession[]>([]);
   sessionsRef.current = sessions;
 
-  // Prefill only; never auto-connect.
+  // Prefill; auto-reconnect once only when THIS tab already holds a saved URL and
+  // a tab-session credential from an earlier explicit pairing. Otherwise show setup.
+  const autoTried = useRef(false);
   useEffect(() => {
-    setUrl(readStorage("local", liveStorage.urlKey) || "http://127.0.0.1:8787");
-    setToken(readStorage("session", liveStorage.tokenKey));
+    if (autoTried.current) return;
+    autoTried.current = true;
+    const savedUrl = readStorage("local", liveStorage.urlKey);
+    const savedToken = readStorage("session", liveStorage.tokenKey);
+    setUrl(savedUrl || "http://127.0.0.1:8787");
+    setToken(savedToken);
+    if (savedUrl && savedToken) void connect(undefined, { url: savedUrl, token: savedToken });
+    else setDrawer("connect");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const connected = connection.status === "connected";
@@ -121,8 +132,10 @@ export function LiveWorkspace({
     }
   }, []);
 
-  async function connect(event?: React.FormEvent) {
+  async function connect(event?: React.FormEvent, saved?: { url: string; token: string }) {
     event?.preventDefault();
+    const url = saved?.url ?? urlState;
+    const token = saved?.token ?? tokenState;
     disconnect(false);
     let c: LiveClient;
     try {

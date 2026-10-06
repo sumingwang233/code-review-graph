@@ -32,7 +32,7 @@ const serveUrl = await bundle({entryPoint: join(here, 'index.jsx'), outDir: join
 const shared = {serveUrl, inputProps, browserExecutable, chromeMode: 'chrome-for-testing', logLevel: 'warn'};
 const composition = await selectComposition({...shared, id: 'AgentMemory4K'});
 if (process.argv.includes('--samples')) {
-  for (const time of [13, 23, 33, 43, 53, 58]) {
+  for (const time of [3.5, 13.5, 22, 33.5, 44.5, 53.5, 58.5]) {
     const output = join(videoDir, `motion-frame-${time}.png`);
     await renderStill({...shared, composition, frame: time * 24, output, imageFormat: 'png'});
     console.log(`Sample saved: ${output}`);

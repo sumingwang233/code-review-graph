@@ -41,11 +41,12 @@ import {
   initialState,
   replayTurns,
   restoreState,
-  sessionNames,
   storageKey,
+  legacyStorageKeys,
+  sourceLabel,
+  DEMO_WORKSPACE,
   connect,
   type GraphState,
-  type SessionId,
 } from "@/lib/memory/graph";
 import { MemoryNode, type MemoryFlowNode } from "./MemoryNode";
 import { MemoryInspector, displayTime } from "./MemoryInspector";
@@ -58,7 +59,7 @@ import {
   type GraphScope,
 } from "@/lib/codegraph/existing";
 import {
-  demoScripts,
+  demoScript,
   memoryRevision,
   newRun,
   stepDemo,
@@ -66,55 +67,42 @@ import {
 } from "@/lib/codegraph/handoff";
 import { Pause, SkipForward } from "lucide-react";
 const sampleCodeAdapter = createSampleExistingGraphAdapter();
-const demoScope = (conversationId: SessionId): GraphScope => ({
+// One shared memory graph for the local workspace; native chats are provenance only.
+const demoScope: GraphScope = {
   ownerId: "local-owner",
   workspaceId: "demo-workspace",
   repositoryId: SAMPLE_REPOSITORY,
-  conversationId,
-});
+  conversationId: DEMO_WORKSPACE,
+};
 const DEMO_STEP_MS = 5200;
 const nodeTypes = { memory: MemoryNode };
-const sessionIds: SessionId[] = ["billing", "deployment"];
 type Feedback = { message: string; error: boolean };
 export function MemoryWorkspace({ modeSwitch }: { modeSwitch?: ReactNode }) {
-  const [states, setStates] = useState<Record<SessionId, GraphState>>(() => ({
-    billing: initialState("billing"),
-    deployment: initialState("deployment"),
-  }));
-  const [session, setSession] = useState<SessionId>("billing");
+  const [state, setState] = useState<GraphState>(() => initialState(DEMO_WORKSPACE));
   const [ready, setReady] = useState(false);
   const [inspector, setInspector] = useState(true);
   const [feed, setFeed] = useState<"turns" | "activity" | null>(null);
   const [drawer, setDrawer] = useState<"context" | "connect" | null>(null);
-  const [queries, setQueries] = useState<Record<SessionId, string>>({
-    billing: "",
-    deployment: "",
-  });
-  const [inputs, setInputs] = useState<Record<SessionId, string>>({ billing: "", deployment: "" });
-  const [feedback, setFeedback] = useState<Partial<Record<SessionId, Feedback>>>({});
-  const [running, setRunning] = useState<SessionId | null>(null);
-  const [busy, setBusy] = useState<SessionId | null>(null);
-  const [resetSession, setResetSession] = useState<SessionId | null>(null);
+  const [query, setQuery] = useState("");
+  const [input, setInput] = useState("");
+  const [feedback, setFeedback] = useState<Feedback | null>(null);
+  const [running, setRunning] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
   const [persistError, setPersistError] = useState(false);
   const [view, setView] = useState<"dual" | "memory">("memory");
-  const [runs, setRuns] = useState<Record<SessionId, DemoRun>>({
-    billing: newRun("billing"),
-    deployment: newRun("deployment"),
-  });
+  const [run, setRun] = useState<DemoRun>(() => newRun(DEMO_WORKSPACE));
   const reducedMotion = usePrefersReducedMotion();
-  const codeGraph = useMemo(() => sampleCodeAdapter.load(demoScope(session)), [session]);
+  const codeGraph = useMemo(() => sampleCodeAdapter.load(demoScope), []);
   const [measurements, setMeasurements] = useState<
     Record<string, { width: number; height: number }>
   >({});
-  const timers = useRef(new Map<SessionId, ReturnType<typeof setTimeout>>());
-  const runningRef = useRef<SessionId | null>(null);
+  const commandTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const runningRef = useRef(false);
   const replayTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [flow, setFlow] = useState<
     import("@xyflow/react").ReactFlowInstance<MemoryFlowNode> | null
   >(null);
-  const state = states[session];
-  const query = queries[session];
-  const run = runs[session];
   const recalledIds = useMemo(
     () =>
       new Set(
@@ -165,49 +153,47 @@ export function MemoryWorkspace({ modeSwitch }: { modeSwitch?: ReactNode }) {
   const matches = query
     ? graph.memories.filter((m) => m.content.toLowerCase().includes(query.toLowerCase()))
     : [];
-  function update(id: SessionId, apply: (s: GraphState) => GraphState) {
-    setStates((previous) => ({ ...previous, [id]: apply(previous[id]) }));
-  }
+  const sources = useMemo(
+    () => [...new Set(state.turns.map((t) => sourceLabel(t)))],
+    [state.turns],
+  );
+  const update = (apply: (s: GraphState) => GraphState) => setState(apply);
   useEffect(() => {
-    const pendingTimers = timers.current;
     try {
-      setStates({
-        billing: restoreState("billing", localStorage.getItem(storageKey("billing"))),
-        deployment: restoreState("deployment", localStorage.getItem(storageKey("deployment"))),
-      });
+      for (const key of legacyStorageKeys) localStorage.removeItem(key);
+      setState(restoreState(DEMO_WORKSPACE, localStorage.getItem(storageKey(DEMO_WORKSPACE))));
     } catch {
       setPersistError(true);
     }
     setReady(true);
     if (window.innerWidth < 1100) setInspector(false);
     return () => {
-      pendingTimers.forEach(clearTimeout);
+      if (commandTimer.current) clearTimeout(commandTimer.current);
       if (replayTimer.current) clearTimeout(replayTimer.current);
     };
   }, []);
   useEffect(() => {
     if (!ready) return;
     try {
-      for (const id of sessionIds) localStorage.setItem(storageKey(id), JSON.stringify(states[id]));
+      localStorage.setItem(storageKey(DEMO_WORKSPACE), JSON.stringify(state));
     } catch {
       setPersistError(true);
     }
-  }, [states, ready]);
+  }, [state, ready]);
   useEffect(() => {
     if (!running) return;
-    const origin = running;
-    if (states[origin].replayIndex >= replayTurns[origin].length) {
-      runningRef.current = null;
-      setRunning(null);
+    if (state.replayIndex >= replayTurns.length) {
+      runningRef.current = false;
+      setRunning(false);
       return;
     }
     replayTimer.current = setTimeout(() => {
-      if (runningRef.current === origin) update(origin, (s) => demoAdapter.ingestTurn(s));
+      if (runningRef.current) update((s) => demoAdapter.ingestTurn(s));
     }, 1100);
     return () => {
       if (replayTimer.current) clearTimeout(replayTimer.current);
     };
-  }, [running, states]);
+  }, [running, state]);
   useEffect(() => {
     if (flow) {
       const timer = setTimeout(
@@ -222,108 +208,83 @@ export function MemoryWorkspace({ modeSwitch }: { modeSwitch?: ReactNode }) {
       return () => clearTimeout(timer);
     }
     return undefined;
-  }, [session, flow]);
-  // Demo trace: one step at a time, always against the originating chat's current memory.
-  function stepRun(origin: SessionId, keepPlaying: boolean) {
-    const result = stepDemo(runs[origin], states[origin], sampleCodeAdapter, demoScope(origin));
-    const script = demoScripts[origin];
-    const applied = script[runs[origin].step];
+  }, [flow]);
+  // Demo trace: one step at a time, always against the current shared memory.
+  function stepRun(keepPlaying: boolean) {
+    const result = stepDemo(run, state, sampleCodeAdapter, demoScope);
+    const applied = demoScript[run.step];
     if (applied?.kind === "edit")
-      setFeedback((f) => ({
-        ...f,
-        [origin]: {
-          message: `Demo replay · ${applied.command} · previous version kept in history`,
-          error: false,
-        },
-      }));
-    if (result.memory !== states[origin]) update(origin, () => result.memory);
-    setRuns((r) => ({ ...r, [origin]: { ...result.run, playing: keepPlaying && !result.done } }));
+      setFeedback({
+        message: `Demo replay · ${applied.command} · previous version kept in history`,
+        error: false,
+      });
+    if (result.memory !== state) update(() => result.memory);
+    setRun({ ...result.run, playing: keepPlaying && !result.done });
   }
   useEffect(() => {
-    const origin = session;
-    if (!runs[origin].playing) return;
-    const timer = setTimeout(
-      () => stepRun(origin, true),
-      runs[origin].step === 0 ? 300 : DEMO_STEP_MS,
-    );
+    if (!run.playing) return;
+    const timer = setTimeout(() => stepRun(true), run.step === 0 ? 300 : DEMO_STEP_MS);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runs, session]);
+  }, [run]);
   function playDemo() {
     if (runningRef.current) stopReplay();
     setView("dual");
-    const fresh = run.step >= demoScripts[session].length;
-    setRuns((r) => ({
-      ...r,
-      [session]: { ...(fresh ? newRun(session) : r[session]), playing: true },
-    }));
+    const fresh = run.step >= demoScript.length;
+    setRun((r) => ({ ...(fresh ? newRun(DEMO_WORKSPACE) : r), playing: true }));
   }
   function pauseDemo() {
-    setRuns((r) => ({ ...r, [session]: { ...r[session], playing: false } }));
+    setRun((r) => ({ ...r, playing: false }));
   }
   function replayDemo() {
-    setRuns((r) => ({ ...r, [session]: newRun(session) }));
+    setRun(newRun(DEMO_WORKSPACE));
   }
   function choose(id: string) {
-    update(session, (s) => ({ ...s, selectedId: id }));
+    update((s) => ({ ...s, selectedId: id }));
     setInspector(true);
   }
   function stopReplay() {
-    runningRef.current = null;
-    setRunning(null);
+    runningRef.current = false;
+    setRunning(false);
     if (replayTimer.current) clearTimeout(replayTimer.current);
   }
   function play() {
-    if (running === session) {
+    if (running) {
       stopReplay();
       return;
     }
-    runningRef.current = session;
-    setRunning(session);
+    runningRef.current = true;
+    setRunning(true);
     setFeed("turns");
   }
-  function submit(input = inputs[session]) {
-    if (!input.trim() || busy) return;
-    const origin = session;
-    setBusy(origin);
-    setInputs((s) => ({ ...s, [origin]: "" }));
-    setFeedback((f) => ({
-      ...f,
-      [origin]: {
-        message: "Demo interpretation · applying to " + sessionNames[origin],
-        error: false,
-      },
-    }));
-    const timer = setTimeout(() => {
-      setStates((previous) => {
-        const result = demoAdapter.memoryCommand(previous[origin], input);
-        setFeedback((f) => ({
-          ...f,
-          [origin]: { message: result.message, error: !result.supported },
-        }));
-        return { ...previous, [origin]: result.state };
+  function submit(text = input) {
+    if (!text.trim() || busy) return;
+    setBusy(true);
+    setInput("");
+    setFeedback({ message: "Demo interpretation · applying to your memory graph", error: false });
+    commandTimer.current = setTimeout(() => {
+      setState((previous) => {
+        const result = demoAdapter.memoryCommand(previous, text);
+        setFeedback({ message: result.message, error: !result.supported });
+        return result.state;
       });
-      timers.current.delete(origin);
-      setBusy(null);
+      commandTimer.current = null;
+      setBusy(false);
     }, 400);
-    timers.current.set(origin, timer);
   }
   function reset(empty: boolean) {
-    const origin = resetSession;
-    if (!origin) return;
-    if (runningRef.current === origin) stopReplay();
-    const timer = timers.current.get(origin);
-    if (timer) {
-      clearTimeout(timer);
-      timers.current.delete(origin);
-      setBusy(null);
+    if (runningRef.current) stopReplay();
+    if (commandTimer.current) {
+      clearTimeout(commandTimer.current);
+      commandTimer.current = null;
+      setBusy(false);
     }
-    setStates((prev) => ({ ...prev, [origin]: initialState(origin, empty) }));
-    setRuns((prev) => ({ ...prev, [origin]: newRun(origin) }));
-    setFeedback((prev) => ({ ...prev, [origin]: undefined }));
-    setQueries((prev) => ({ ...prev, [origin]: "" }));
-    setInputs((prev) => ({ ...prev, [origin]: "" }));
-    setResetSession(null);
+    setState(initialState(DEMO_WORKSPACE, empty));
+    setRun(newRun(DEMO_WORKSPACE));
+    setFeedback(null);
+    setQuery("");
+    setInput("");
+    setConfirmReset(false);
   }
   function onNodesChange(changes: NodeChange<MemoryFlowNode>[]) {
     const dimensions = changes.filter((change) => change.type === "dimensions");
@@ -338,7 +299,7 @@ export function MemoryWorkspace({ modeSwitch }: { modeSwitch?: ReactNode }) {
     }
     const moves = changes.filter((change) => change.type === "position");
     if (!moves.length) return;
-    update(session, (s) => ({
+    update((s) => ({
       ...s,
       memories: s.memories.map((memory) => {
         const move = moves.find((change) => change.id === memory.id);
@@ -346,7 +307,7 @@ export function MemoryWorkspace({ modeSwitch }: { modeSwitch?: ReactNode }) {
       }),
     }));
   }
-  const completed = state.replayIndex >= replayTurns[session].length;
+  const completed = state.replayIndex >= replayTurns.length;
   const memoryStage = (
     <div className="graph-stage">
       <div className="canvas-top">
@@ -355,8 +316,8 @@ export function MemoryWorkspace({ modeSwitch }: { modeSwitch?: ReactNode }) {
           <input
             aria-label="Search memories"
             value={query}
-            placeholder="Search this chat’s memories…"
-            onChange={(e) => setQueries((prev) => ({ ...prev, [session]: e.target.value }))}
+            placeholder="Search your memories…"
+            onChange={(e) => setQuery(e.target.value)}
           />
           {query && (
             <Button
@@ -364,7 +325,7 @@ export function MemoryWorkspace({ modeSwitch }: { modeSwitch?: ReactNode }) {
               size="icon"
               className="h-5 w-5"
               aria-label="Clear search"
-              onClick={() => setQueries((prev) => ({ ...prev, [session]: "" }))}
+              onClick={() => setQuery("")}
             >
               <X />
             </Button>
@@ -394,7 +355,7 @@ export function MemoryWorkspace({ modeSwitch }: { modeSwitch?: ReactNode }) {
                   key={m.id}
                   onClick={() => {
                     choose(m.id);
-                    setQueries((prev) => ({ ...prev, [session]: "" }));
+                    setQuery("");
                     flow?.setCenter(m.position.x + 116, m.position.y + 60, {
                       zoom: 1,
                       duration: 250,
@@ -405,15 +366,12 @@ export function MemoryWorkspace({ modeSwitch }: { modeSwitch?: ReactNode }) {
                 </Button>
               ))
             ) : (
-              <div className="search-empty">
-                No matching active memories in {sessionNames[session]}.
-              </div>
+              <div className="search-empty">No matching active memories in your graph.</div>
             )}
           </div>
         )}
       </div>
       <ReactFlow<MemoryFlowNode>
-        key={session}
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
@@ -422,7 +380,7 @@ export function MemoryWorkspace({ modeSwitch }: { modeSwitch?: ReactNode }) {
         onNodeClick={(_, node) => choose(node.id)}
         onConnect={(connection) => {
           if (connection.source && connection.target)
-            update(session, (s) => connect(s, connection.source, connection.target, "related to"));
+            update((s) => connect(s, connection.source, connection.target, "related to"));
         }}
         fitView
         fitViewOptions={{ padding: 0.23, maxZoom: 1 }}
@@ -439,25 +397,21 @@ export function MemoryWorkspace({ modeSwitch }: { modeSwitch?: ReactNode }) {
         <div className="empty-graph">
           <Network size={35} strokeWidth={1.2} />
           <h2>No memories yet</h2>
-          <p>This chat is empty. Add a memory below or reset to the sample graph.</p>
+          <p>Your memory graph is empty. Add a memory below or reset to the sample graph.</p>
         </div>
       )}
-      {(running === session || completed || state.replayIndex > 0) && (
+      {(running || completed || state.replayIndex > 0) && (
         <div className="replay-strip">
-          {running === session ? (
-            <LoaderCircle size={12} className="replay-pulse" />
-          ) : (
-            <History size={12} />
-          )}
+          {running ? <LoaderCircle size={12} className="replay-pulse" /> : <History size={12} />}
           <span>
-            {running === session
-              ? "Capturing next CLI exchange…"
+            {running
+              ? "Capturing the next prompt…"
               : completed
                 ? "Replay complete"
                 : "Replay paused"}{" "}
-            · {state.replayIndex}/{replayTurns[session].length}
+            · {state.replayIndex}/{replayTurns.length}
           </span>
-          {running !== session && !completed && (
+          {!running && !completed && (
             <Button variant="ghost" size="sm" onClick={play}>
               <Play />
               Resume
@@ -466,9 +420,9 @@ export function MemoryWorkspace({ modeSwitch }: { modeSwitch?: ReactNode }) {
           <Button
             variant="ghost"
             size="icon"
-            aria-label="Reset selected chat"
-            title="Reset selected chat"
-            onClick={() => setResetSession(session)}
+            aria-label="Reset memory graph"
+            title="Reset memory graph"
+            onClick={() => setConfirmReset(true)}
           >
             <RotateCcw />
           </Button>
@@ -486,7 +440,7 @@ export function MemoryWorkspace({ modeSwitch }: { modeSwitch?: ReactNode }) {
   );
   return (
     <div className="workspace">
-      <aside className="session-rail" aria-label="CLI sessions">
+      <aside className="session-rail" aria-label="Memory graph navigation">
         <div className="brand">
           <Network size={24} strokeWidth={1.5} className="lens-logo" />
           <div>
@@ -496,33 +450,32 @@ export function MemoryWorkspace({ modeSwitch }: { modeSwitch?: ReactNode }) {
         </div>
         {modeSwitch}
         <div className="rail-section">
-          <span className="rail-label">Conversations</span>
+          <span className="rail-label">Your memory graph</span>
           <FolderGit2 size={12} className="text-muted-foreground" />
         </div>
-        <nav className="session-list">
-          {sessionIds.map((id) => (
-            <Button
-              key={id}
-              variant="ghost"
-              className={`session-button ${session === id ? "active" : ""}`}
-              aria-pressed={session === id}
-              onClick={() => {
-                setRuns((r) => ({ ...r, [session]: { ...r[session], playing: false } }));
-                setSession(id);
-                setInspector(window.innerWidth >= 1100);
-              }}
-            >
-              <FileCode2 size={16} />
-              <div className="min-w-0">
-                <div className="session-title">{sessionNames[id]}</div>
-                <div className="session-sub">
-                  {demoAdapter.getGraph(states[id]).memories.length} memories · CLI replay
-                </div>
+        <div className="session-list">
+          <div className="session-button active" aria-current="true">
+            <Network size={16} />
+            <div className="min-w-0">
+              <div className="session-title">Agent memory</div>
+              <div className="session-sub">
+                {graph.memories.length} memories · {sources.length} sources
               </div>
-              {session === id && <span className="session-marker" />}
-            </Button>
+            </div>
+            <span className="session-marker" />
+          </div>
+        </div>
+        <div className="rail-section">
+          <span className="rail-label">Captured from</span>
+        </div>
+        <ul className="source-list" aria-label="Capture sources">
+          {sources.map((label) => (
+            <li key={label}>
+              <FileCode2 size={12} />
+              <span className="truncate">{label}</span>
+            </li>
           ))}
-        </nav>
+        </ul>
         <div className="rail-rule" />
         <nav className="rail-menu">
           <Button variant="ghost" className="rail-action" onClick={() => setDrawer("context")}>
@@ -543,19 +496,19 @@ export function MemoryWorkspace({ modeSwitch }: { modeSwitch?: ReactNode }) {
             onClick={() => setFeed(feed === "turns" ? null : "turns")}
           >
             <Terminal />
-            Captured CLI turns<span>{state.turns.length}</span>
+            Captured prompts<span>{state.turns.length}</span>
           </Button>
         </nav>
         <div className="rail-bottom">
           <div className="connection-box">
             <div className="connection-title">
               <Unplug size={12} className="text-muted-foreground" />
-              CLI not connected
+              Local service not connected
             </div>
             <p>
-              Replay adapter selected.
+              Demo replay uses sample prompts.
               <br />
-              Your coding chat stays in your CLI.
+              Your coding chats stay in your tools.
             </p>
             <Button
               variant="outline"
@@ -581,10 +534,10 @@ export function MemoryWorkspace({ modeSwitch }: { modeSwitch?: ReactNode }) {
           <div className="breadcrumb">
             <span>Workspace</span>
             <ChevronRight size={11} />
-            <strong className="truncate">{sessionNames[session]}</strong>
+            <strong className="truncate">Agent memory</strong>
             <ChevronRight size={11} />
             <span className="hidden sm:inline">Memory graph</span>
-            <span className="sm:hidden">CLI not connected</span>
+            <span className="sm:hidden">Demo replay</span>
           </div>
           <div className="topbar-actions">
             <span className="demo-badge">
@@ -593,12 +546,12 @@ export function MemoryWorkspace({ modeSwitch }: { modeSwitch?: ReactNode }) {
             </span>
             <span className="offline-label">
               <Unplug size={11} />
-              CLI not connected
+              Local service not connected
             </span>
             <Button
               variant="ghost"
               size="icon"
-              title="Proposed CLI integration"
+              title="Connect a source"
               aria-label="Connect source"
               onClick={() => setDrawer("connect")}
             >
@@ -608,11 +561,12 @@ export function MemoryWorkspace({ modeSwitch }: { modeSwitch?: ReactNode }) {
         </header>
         <section className="graph-heading">
           <div className="min-w-0">
-            <h1>{sessionNames[session]}</h1>
+            <h1>Your memory graph</h1>
             <p>
               <Network size={12} />
               {graph.memories.length} active memories<span>·</span>
-              {graph.edges.length} relationships
+              {graph.edges.length} relationships<span>·</span>
+              {sources.length} sources
             </p>
           </div>
           <div className="heading-actions">
@@ -628,15 +582,11 @@ export function MemoryWorkspace({ modeSwitch }: { modeSwitch?: ReactNode }) {
             </Button>
             <Button
               className="replay-button"
-              onClick={completed ? () => setResetSession(session) : play}
+              onClick={completed ? () => setConfirmReset(true) : play}
               disabled={!ready}
             >
-              {running === session ? <Square /> : completed ? <RotateCcw /> : <Play />}
-              {running === session
-                ? "Stop replay"
-                : completed
-                  ? "Replay again"
-                  : "Replay CLI turns"}
+              {running ? <Square /> : completed ? <RotateCcw /> : <Play />}
+              {running ? "Stop replay" : completed ? "Replay again" : "Replay captured prompts"}
             </Button>
           </div>
         </section>
@@ -644,7 +594,7 @@ export function MemoryWorkspace({ modeSwitch }: { modeSwitch?: ReactNode }) {
           {view === "dual" ? (
             <TwoGraphStage
               memoryCanvas={memoryStage}
-              memoryScope={`${sessionNames[session]} · ${memoryRevision(state)}`}
+              memoryScope={`Agent memory · ${memoryRevision(state)}`}
               trace={run.trace}
               codeGraph={codeGraph}
               codeStatus={sampleCodeAdapter.status()}
@@ -663,7 +613,7 @@ export function MemoryWorkspace({ modeSwitch }: { modeSwitch?: ReactNode }) {
                   ) : (
                     <Button size="sm" onClick={playDemo} disabled={!ready}>
                       <Play />
-                      {run.step === 0 || run.step >= demoScripts[session].length
+                      {run.step === 0 || run.step >= demoScript.length
                         ? "Play the 60-second demo"
                         : "Resume demo"}
                     </Button>
@@ -671,8 +621,8 @@ export function MemoryWorkspace({ modeSwitch }: { modeSwitch?: ReactNode }) {
                   <Button
                     size="sm"
                     variant="ghost"
-                    onClick={() => stepRun(session, false)}
-                    disabled={!ready || run.playing || run.step >= demoScripts[session].length}
+                    onClick={() => stepRun(false)}
+                    disabled={!ready || run.playing || run.step >= demoScript.length}
                   >
                     <SkipForward />
                     Step
@@ -683,8 +633,8 @@ export function MemoryWorkspace({ modeSwitch }: { modeSwitch?: ReactNode }) {
                   </Button>
                   <span className="demo-caption" role="status">
                     {run.step
-                      ? `${run.step}/${demoScripts[session].length} · ${demoScripts[session][run.step - 1]?.caption}`
-                      : "Coding prompts come from captured sample CLI turns"}
+                      ? `${run.step}/${demoScript.length} · ${demoScript[run.step - 1]?.caption}`
+                      : "Coding prompts come from captured sample prompts"}
                   </span>
                 </div>
               }
@@ -694,17 +644,17 @@ export function MemoryWorkspace({ modeSwitch }: { modeSwitch?: ReactNode }) {
           )}
           {inspector && (
             <MemoryInspector
-              key={`${session}:${state.selectedId}`}
+              key={state.selectedId ?? "none"}
               memory={selected}
               state={state}
-              onUpdate={(apply) => update(session, apply)}
+              onUpdate={(apply) => update(apply)}
               onClose={() => setInspector(false)}
               onSource={() => setFeed("turns")}
             />
           )}
         </section>
         {feed && (
-          <section className="activity-panel" aria-label="External CLI evidence">
+          <section className="activity-panel" aria-label="Captured prompt evidence">
             <div className="activity-toolbar">
               <Button
                 variant="ghost"
@@ -712,7 +662,7 @@ export function MemoryWorkspace({ modeSwitch }: { modeSwitch?: ReactNode }) {
                 onClick={() => setFeed("turns")}
               >
                 <Terminal />
-                Captured CLI turns
+                Captured prompts
               </Button>
               <Button
                 variant="ghost"
@@ -723,7 +673,7 @@ export function MemoryWorkspace({ modeSwitch }: { modeSwitch?: ReactNode }) {
                 Memory activity
               </Button>
               <span className="activity-title">
-                {feed === "turns" ? "Read-only · demo evidence" : sessionNames[session]}
+                {feed === "turns" ? "Read-only · demo evidence" : "Agent memory"}
               </span>
               <Button
                 variant="ghost"
@@ -739,6 +689,7 @@ export function MemoryWorkspace({ modeSwitch }: { modeSwitch?: ReactNode }) {
                 state.turns.length ? (
                   [...state.turns].reverse().map((turn) => (
                     <div className="turn" key={turn.id}>
+                      <span className="turn-source">{sourceLabel(turn)}</span>
                       <span className="turn-role">you</span>
                       <div>{turn.user}</div>
                       {turn.agent && (
@@ -764,7 +715,7 @@ export function MemoryWorkspace({ modeSwitch }: { modeSwitch?: ReactNode }) {
                     </div>
                   ))
                 ) : (
-                  <p className="text-xs text-muted-foreground">No captured turns in this chat.</p>
+                  <p className="text-xs text-muted-foreground">No captured prompts yet.</p>
                 )
               ) : state.activity.length ? (
                 state.activity.map((entry) => (
@@ -810,18 +761,18 @@ export function MemoryWorkspace({ modeSwitch }: { modeSwitch?: ReactNode }) {
           >
             <input
               id="memory-command"
-              value={inputs[session]}
+              value={input}
               placeholder="Add a fact, connect an idea, or correct a memory…"
-              onChange={(e) => setInputs((prev) => ({ ...prev, [session]: e.target.value }))}
+              onChange={(e) => setInput(e.target.value)}
             />
             <Button
               type="submit"
               size="icon"
-              disabled={!ready || !!busy || !inputs[session].trim()}
+              disabled={!ready || busy || !input.trim()}
               aria-label="Apply memory command"
               title="Apply memory command"
             >
-              {busy === session ? <LoaderCircle /> : <ArrowUp />}
+              {busy ? <LoaderCircle /> : <ArrowUp />}
             </Button>
           </form>
           <div className="command-chips">
@@ -830,19 +781,16 @@ export function MemoryWorkspace({ modeSwitch }: { modeSwitch?: ReactNode }) {
                 key={command}
                 variant="ghost"
                 className="command-chip"
-                onClick={() => setInputs((prev) => ({ ...prev, [session]: command }))}
+                onClick={() => setInput(command)}
               >
                 {i === 0 ? <Plus /> : i === 1 ? <GitBranch /> : i === 2 ? <RotateCcw /> : <X />}
                 {command}
               </Button>
             ))}
           </div>
-          {feedback[session] && (
-            <div
-              role="status"
-              className={`command-feedback ${feedback[session]?.error ? "is-error" : ""}`}
-            >
-              {feedback[session]?.message}
+          {feedback && (
+            <div role="status" className={`command-feedback ${feedback.error ? "is-error" : ""}`}>
+              {feedback.message}
             </div>
           )}
         </section>
@@ -854,15 +802,15 @@ export function MemoryWorkspace({ modeSwitch }: { modeSwitch?: ReactNode }) {
               className="h-auto p-0 text-[9px] text-muted-foreground"
               onClick={() => setFeed(feed ? null : "turns")}
             >
-              {feed ? "Hide captured turns" : "Show captured CLI turns"}
+              {feed ? "Hide captured prompts" : "Show captured prompts"}
             </Button>
             <span>·</span>
             <Button
               variant="link"
               className="h-auto p-0 text-[9px] text-muted-foreground"
-              onClick={() => setResetSession(session)}
+              onClick={() => setConfirmReset(true)}
             >
-              Reset chat
+              Reset memory graph
             </Button>
           </span>
           <span>
@@ -872,19 +820,19 @@ export function MemoryWorkspace({ modeSwitch }: { modeSwitch?: ReactNode }) {
       </main>
       <MemoryDrawers drawer={drawer} onClose={() => setDrawer(null)} state={state} />
       <Dialog
-        open={resetSession !== null}
+        open={confirmReset}
         onOpenChange={(open) => {
-          if (!open) setResetSession(null);
+          if (!open) setConfirmReset(false);
         }}
       >
         <DialogContent className="confirm-dialog">
-          <DialogTitle>Reset {resetSession ? sessionNames[resetSession] : "chat"}?</DialogTitle>
+          <DialogTitle>Reset your memory graph?</DialogTitle>
           <DialogDescription className="confirm-description">
-            Reset only this chat’s memories, positions, history and replay progress. The other CLI
-            chat will stay unchanged. You can restore the sample graph or start empty.
+            Reset the demo memory graph, its positions, history and replay progress. You can restore
+            the sample graph or start empty.
           </DialogDescription>
           <div className="flex flex-wrap justify-end gap-2">
-            <Button variant="ghost" onClick={() => setResetSession(null)}>
+            <Button variant="ghost" onClick={() => setConfirmReset(false)}>
               Cancel
             </Button>
             <Button variant="outline" onClick={() => reset(true)}>
@@ -924,8 +872,36 @@ export function ModeSwitch({
     </div>
   );
 }
+export const MODE_KEY = "memory-lens:mode";
+
+/** ?mode=live|demo wins; else the saved mode; else Live when this tab holds a credential. */
+export function initialMode(): "demo" | "live" {
+  try {
+    const q = new URLSearchParams(window.location.search).get("mode");
+    if (q === "live" || q === "demo") return q;
+    const saved = localStorage.getItem(MODE_KEY);
+    if (saved === "live" || saved === "demo") return saved;
+    if (sessionStorage.getItem("memory-lens:live:token")) return "live";
+  } catch {
+    /* storage unavailable */
+  }
+  return "demo";
+}
+
 export function MemoryLens() {
-  const [mode, setMode] = useState<"demo" | "live">("demo");
+  const [mode, setModeState] = useState<"demo" | "live" | null>(null);
+  useEffect(() => {
+    setModeState(initialMode());
+  }, []);
+  const setMode = (next: "demo" | "live") => {
+    setModeState(next);
+    try {
+      localStorage.setItem(MODE_KEY, next);
+    } catch {
+      /* storage unavailable */
+    }
+  };
+  if (mode === null) return <div className="min-h-screen bg-background" />;
   const modeSwitch = <ModeSwitch mode={mode} onChange={setMode} />;
   return (
     <ReactFlowProvider>
