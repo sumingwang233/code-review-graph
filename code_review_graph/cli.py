@@ -53,6 +53,7 @@ from typing import Iterable, TypedDict
 from .errors import CodeReviewGraphError, is_lock_error
 from .neighbourhood import DEFAULT_DEPTH as NB_DEFAULT_DEPTH
 from .neighbourhood import DEFAULT_MAX_NODES as NB_DEFAULT_MAX_NODES
+from .i18n import detect_language
 
 logger = logging.getLogger(__name__)
 
@@ -604,16 +605,25 @@ def _find_explicit_repo_root(start: Path) -> "Path | None":
         current = current.parent
 
 
-def _run_graph_tool_command(args, repo_root: Path) -> None:
-    """Run one graph-tool CLI wrapper and emit exactly one JSON value."""
+def _run_graph_tool_command(
+    args, repo_root: Path, db_path: Path | None = None,
+) -> None:
+    """Run one graph-tool CLI wrapper and emit exactly one JSON value.
+
+    *db_path* is the graph file to read when --data-dir named one; it
+    is forwarded to the tool layer so an externally stored graph is
+    found instead of silently resolving to an empty default.
+    """
     from . import tools
 
     root = str(repo_root)
+    db_arg = str(db_path) if db_path is not None else None
     if args.command == "query":
         result = tools.query_graph(
             pattern=args.pattern,
             target=args.target,
             repo_root=root,
+            db_path=db_arg,
         )
     elif args.command == "impact":
         result = tools.get_impact_radius(
@@ -622,6 +632,7 @@ def _run_graph_tool_command(args, repo_root: Path) -> None:
             max_results=args.max_results,
             repo_root=root,
             base=args.base,
+            db_path=db_arg,
         )
     elif args.command == "search":
         result = tools.semantic_search_nodes(
@@ -629,6 +640,7 @@ def _run_graph_tool_command(args, repo_root: Path) -> None:
             kind=args.kind,
             limit=args.limit,
             repo_root=root,
+            db_path=db_arg,
         )
     elif args.command == "flows":
         result = tools.list_flows(
@@ -636,6 +648,7 @@ def _run_graph_tool_command(args, repo_root: Path) -> None:
             sort_by=args.sort,
             limit=args.limit,
             kind=args.kind,
+            db_path=db_arg,
         )
     elif args.command == "flow":
         result = tools.get_flow(
@@ -643,12 +656,14 @@ def _run_graph_tool_command(args, repo_root: Path) -> None:
             flow_name=args.name,
             include_source=args.source,
             repo_root=root,
+            db_path=db_arg,
         )
     elif args.command == "communities":
         result = tools.list_communities_func(
             repo_root=root,
             sort_by=args.sort,
             min_size=args.min_size,
+            db_path=db_arg,
         )
     elif args.command == "community":
         result = tools.get_community_func(
@@ -656,17 +671,20 @@ def _run_graph_tool_command(args, repo_root: Path) -> None:
             community_id=args.id,
             include_members=args.members,
             repo_root=root,
+            db_path=db_arg,
         )
     elif args.command == "architecture":
         result = tools.get_architecture_overview_func(
             repo_root=root,
             detail_level=args.detail_level,
+            db_path=db_arg,
         )
     elif args.command == "large-functions":
         result = tools.find_large_functions(
             min_lines=args.min_lines,
             kind=args.kind,
             file_path_pattern=args.path,
+            db_path=db_arg,
             limit=args.limit,
             repo_root=root,
         )
@@ -678,6 +696,7 @@ def _run_graph_tool_command(args, repo_root: Path) -> None:
             kind=args.kind,
             file_pattern=args.path,
             repo_root=root,
+            db_path=db_arg,
         )
     print(json.dumps(result, indent=2, default=str))
 
@@ -1181,6 +1200,14 @@ def build_parser() -> argparse.ArgumentParser:
     vis_cmd = sub.add_parser("visualize", help="Generate interactive HTML graph visualization")
     vis_cmd.add_argument("--repo", default=None, help="Repository root (auto-detected)")
     vis_cmd.add_argument(
+        "--lang",
+        default=None,
+        help=(
+            "UI language for the page: en or zh. Omitted, it follows "
+            "CRG_LANG, then the process locale, then the OS UI language."
+        ),
+    )
+    vis_cmd.add_argument(
         "--mode",
         choices=["auto", "full", "community", "file"],
         default="auto",
@@ -1372,6 +1399,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     detect_cmd.add_argument("--repo", default=None, help="Repository root (auto-detected)")
     detect_cmd.add_argument(
+        "--data-dir",
+        default=None,
+        help="External directory holding the graph database"
+    )
+    detect_cmd.add_argument(
         "--churn",
         action="store_true",
         help="Add an opt-in change-frequency term to risk scores. Counts "
@@ -1442,6 +1474,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     query_cmd.add_argument("target", help="Node name, qualified name, or file path")
     query_cmd.add_argument("--repo", default=None, help="Repository root (auto-detected)")
+    query_cmd.add_argument(
+        "--data-dir",
+        default=None,
+        help="External directory holding the graph database"
+    )
 
     impact_cmd = sub.add_parser("impact", help="Analyze the blast radius of changes")
     impact_cmd.add_argument(
@@ -1454,6 +1491,11 @@ def build_parser() -> argparse.ArgumentParser:
     impact_cmd.add_argument("--max-results", type=_positive_int, default=500)
     impact_cmd.add_argument("--base", default="HEAD~1")
     impact_cmd.add_argument("--repo", default=None, help="Repository root (auto-detected)")
+    impact_cmd.add_argument(
+        "--data-dir",
+        default=None,
+        help="External directory holding the graph database"
+    )
 
     search_cmd = sub.add_parser("search", help="Search graph entities")
     search_cmd.add_argument("query", help="Search string")
@@ -1464,6 +1506,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     search_cmd.add_argument("--limit", type=_positive_int, default=20)
     search_cmd.add_argument("--repo", default=None, help="Repository root (auto-detected)")
+    search_cmd.add_argument(
+        "--data-dir",
+        default=None,
+        help="External directory holding the graph database"
+    )
 
     flows_cmd = sub.add_parser("flows", help="List stored execution flows")
     flows_cmd.add_argument(
@@ -1474,6 +1521,11 @@ def build_parser() -> argparse.ArgumentParser:
     flows_cmd.add_argument("--limit", type=_positive_int, default=50)
     flows_cmd.add_argument("--kind", default=None, help="Entry-point kind filter")
     flows_cmd.add_argument("--repo", default=None, help="Repository root (auto-detected)")
+    flows_cmd.add_argument(
+        "--data-dir",
+        default=None,
+        help="External directory holding the graph database"
+    )
 
     flow_cmd = sub.add_parser("flow", help="Show one stored execution flow")
     flow_selector = flow_cmd.add_mutually_exclusive_group(required=True)
@@ -1481,6 +1533,11 @@ def build_parser() -> argparse.ArgumentParser:
     flow_selector.add_argument("--name", default=None)
     flow_cmd.add_argument("--source", action="store_true", help="Include source snippets")
     flow_cmd.add_argument("--repo", default=None, help="Repository root (auto-detected)")
+    flow_cmd.add_argument(
+        "--data-dir",
+        default=None,
+        help="External directory holding the graph database"
+    )
 
     communities_cmd = sub.add_parser("communities", help="List graph communities")
     communities_cmd.add_argument(
@@ -1490,6 +1547,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     communities_cmd.add_argument("--min-size", type=_non_negative_int, default=0)
     communities_cmd.add_argument("--repo", default=None, help="Repository root (auto-detected)")
+    communities_cmd.add_argument(
+        "--data-dir",
+        default=None,
+        help="External directory holding the graph database"
+    )
 
     community_cmd = sub.add_parser("community", help="Show one graph community")
     community_selector = community_cmd.add_mutually_exclusive_group(required=True)
@@ -1497,6 +1559,11 @@ def build_parser() -> argparse.ArgumentParser:
     community_selector.add_argument("--name", default=None)
     community_cmd.add_argument("--members", action="store_true")
     community_cmd.add_argument("--repo", default=None, help="Repository root (auto-detected)")
+    community_cmd.add_argument(
+        "--data-dir",
+        default=None,
+        help="External directory holding the graph database"
+    )
 
     architecture_cmd = sub.add_parser("architecture", help="Show architecture overview")
     architecture_cmd.add_argument(
@@ -1505,6 +1572,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="minimal",
     )
     architecture_cmd.add_argument("--repo", default=None, help="Repository root (auto-detected)")
+    architecture_cmd.add_argument(
+        "--data-dir",
+        default=None,
+        help="External directory holding the graph database"
+    )
 
     large_cmd = sub.add_parser("large-functions", help="Find oversized graph nodes")
     large_cmd.add_argument("--min-lines", type=_positive_int, default=50)
@@ -1516,6 +1588,11 @@ def build_parser() -> argparse.ArgumentParser:
     large_cmd.add_argument("--path", default=None, help="File-path substring filter")
     large_cmd.add_argument("--limit", type=_positive_int, default=50)
     large_cmd.add_argument("--repo", default=None, help="Repository root (auto-detected)")
+    large_cmd.add_argument(
+        "--data-dir",
+        default=None,
+        help="External directory holding the graph database"
+    )
 
     refactor_cmd = sub.add_parser("refactor", help="Preview graph-backed refactors")
     refactor_cmd.add_argument("mode", choices=["rename", "dead_code", "suggest"])
@@ -1528,6 +1605,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     refactor_cmd.add_argument("--path", default=None, help="File-path substring filter")
     refactor_cmd.add_argument("--repo", default=None, help="Repository root (auto-detected)")
+    refactor_cmd.add_argument(
+        "--data-dir",
+        default=None,
+        help="External directory holding the graph database"
+    )
 
     # serve / mcp
     serve_cmd = sub.add_parser(
@@ -1535,6 +1617,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Start MCP server (stdio by default, or HTTP on localhost with --http)",
     )
     serve_cmd.add_argument("--repo", default=None, help="Repository root (auto-detected)")
+    serve_cmd.add_argument(
+        "--data-dir",
+        default=None,
+        help="External directory holding the graph database"
+    )
     serve_cmd.add_argument(
         "--auto-watch",
         action="store_true",
@@ -1570,6 +1657,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     mcp_cmd = sub.add_parser("mcp", help="Alias for serve")
     mcp_cmd.add_argument("--repo", default=None, help="Repository root (auto-detected)")
+    mcp_cmd.add_argument(
+        "--data-dir",
+        default=None,
+        help="External directory holding the graph database"
+    )
     mcp_cmd.add_argument(
         "--auto-watch",
         action="store_true",
@@ -1713,14 +1805,23 @@ def _dispatch() -> None:
                 raise SystemExit(1)
         else:
             repo_root = find_project_root()
-        db_path = get_db_path(repo_root)
+        # An explicit --data-dir names the graph to read. Without this this
+        # branch always resolved <repo>/.code-review-graph/graph.db, so a
+        # graph stored elsewhere was invisible to all ten of these commands
+        # and they reported the empty result as a successful "found 0".
+        # Read-only here: never create the file or its directory.
+        explicit_data_dir = getattr(args, "data_dir", None)
+        if explicit_data_dir:
+            db_path = Path(explicit_data_dir).expanduser().resolve() / "graph.db"
+        else:
+            db_path = get_db_path(repo_root)
         if not db_path.exists():
             print(
                 f"No graph found at {db_path}. Run `code-review-graph build` first.",
                 file=sys.stderr,
             )
             raise SystemExit(1)
-        _run_graph_tool_command(args, repo_root)
+        _run_graph_tool_command(args, repo_root, db_path=db_path)
         return
 
     embedding_refresh_kwargs = _embedding_refresh_kwargs(args, ap)
@@ -2000,9 +2101,15 @@ def _dispatch() -> None:
         repo_root = Path(args.repo) if args.repo else find_project_root()
 
     # Handle --data-dir for commands that support it
+    # Every subcommand that can read a graph can be pointed at one stored
+    # outside the repo. Before this, the 19 commands missing from this list
+    # silently fell back to <repo>/.code-review-graph/graph.db and reported
+    # an empty graph as "ok, found 0" instead of "no graph here".
     _data_dir_cmds = (
         "build",
         "update",
+        "postprocess",
+        "embed",
         "detect-changes",
         "status",
         "forget",
@@ -2010,6 +2117,17 @@ def _dispatch() -> None:
         "visualize",
         "wiki",
         "dead-code",
+        "enrich",
+        "query",
+        "impact",
+        "search",
+        "flows",
+        "flow",
+        "communities",
+        "community",
+        "architecture",
+        "large-functions",
+        "refactor",
     )
     # Read-only consumers must not create graph.db / data dirs / registry
     # entries when the graph is missing (follow-up to #777 / #782; see #803).
@@ -2019,6 +2137,19 @@ def _dispatch() -> None:
         "visualize",
         "wiki",
         "watch",
+        # Pure readers: they must never create graph.db, a data dir or a
+        # registry entry just because the graph is missing (#777/#782/#803).
+        "query",
+        "impact",
+        "search",
+        "flows",
+        "flow",
+        "communities",
+        "community",
+        "architecture",
+        "large-functions",
+        "refactor",
+        "dead-code",
     })
     explicit_data_dir = bool(getattr(args, "data_dir", None))
     read_only_explicit_data_dir = (
@@ -2442,6 +2573,7 @@ def _dispatch() -> None:
                         max_nodes=max_nodes,
                         report=seed_report,
                         sidecar=getattr(args, "sidecar", False),
+                        lang=detect_language(getattr(args, "lang", None)),
                     )
                 except (SeedResolutionError, ValueError) as exc:
                     print(f"visualize: {exc}", file=sys.stderr)
